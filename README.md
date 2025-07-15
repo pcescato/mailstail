@@ -29,13 +29,14 @@ L’ensemble est conteneurisé avec Docker et orchestré via `docker-compose`.
 ### Configuration
 
 Créer un fichier `.env` à la racine du projet avec les variables nécessaires, par exemple :
-
+```
 IMAP_HOST=imap.gmail.com
 IMAP_USER=ton.email@gmail.com
 IMAP_PASS=tonmotdepasseappli # ou laisser vide si OAuth2
 CLIENT_ID=ton-client-id-oauth
 CLIENT_SECRET=ton-client-secret-oauth
 REFRESH_TOKEN=ton-refresh-token-oauth
+```
 
 ### Lancer l’application
 ```
