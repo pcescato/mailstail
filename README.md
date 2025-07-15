@@ -1,4 +1,4 @@
-# Mail UI - Application de gestion de mails avec scoring intelligent
+# mailstail - Application de gestion de mails avec scoring intelligent
 
 ## Description
 
