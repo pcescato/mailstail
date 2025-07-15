@@ -1,0 +1,13 @@
+Installer les dépendances :
+
+bash
+Copier
+Modifier
+npm install react react-dom react-quill
+
+Lancer en dev :
+
+bash
+Copier
+Modifier
+npm run dev

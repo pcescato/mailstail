@@ -1,0 +1,73 @@
+body {
+  font-family: sans-serif;
+  margin: 0;
+  background-color: #f5f5f5;
+}
+
+.app {
+  padding: 1rem;
+  max-width: 800px;
+  margin: 0 auto;
+  background-color: #fff;
+  border-radius: 8px;
+  box-shadow: 0 0 10px rgba(0,0,0,0.05);
+}
+
+.mail-list {
+  border-bottom: 1px solid #ccc;
+  margin-bottom: 1rem;
+}
+
+.mail-item {
+  padding: 0.75rem;
+  border-top: 1px solid #eee;
+  cursor: pointer;
+}
+
+.mail-item:hover {
+  background-color: #fafafa;
+}
+
+.mail-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: bold;
+}
+
+.mail-preview {
+  color: #555;
+  font-size: 0.9rem;
+  margin-top: 0.3rem;
+}
+
+.mail-view {
+  padding: 1rem;
+  background-color: #f9f9f9;
+  border-radius: 6px;
+}
+
+.reply-box {
+  margin-top: 1rem;
+}
+
+button {
+  margin-top: 0.5rem;
+  padding: 0.4rem 1rem;
+  border: none;
+  border-radius: 4px;
+  background-color: #1976d2;
+  color: white;
+  cursor: pointer;
+}
+
+button:hover {
+  background-color: #1565c0;
+}
+
+.dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
