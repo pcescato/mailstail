@@ -3,7 +3,7 @@
 // à placer dans le même dossier que vite.config.js
 
 {
-  "name": "mail-ui",
+  "name": "mailstail",
   "version": "1.0.0",
   "private": true,
   "scripts": {
