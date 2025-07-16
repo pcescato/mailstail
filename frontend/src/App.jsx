@@ -34,45 +34,50 @@ function App() {
   const getColor = importance => {
     if (importance === 'high') return 'red';
     if (importance === 'medium') return 'orange';
-    return 'gray';
-  };
+import React, { useState, useEffect } from "react";
+
+function App() {
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/messages")
+      .then((res) => res.json())
+      .then((data) => {
+        setMessages(data);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err.message);
+        setLoading(false);
+      });
+  }, []);
+
+  if (loading) return <div>Chargement…</div>;
+  if (error) return <div>Erreur : {error}</div>;
 
   return (
-    <div className="app">
-      <h1>📬 Interface Mail</h1>
-      <div className="mail-list">
-        {mails.map(mail => (
-          <div
-            key={mail.id}
-            className="mail-item"
-            onClick={() => {
-              setSelectedMail(mail);
-              setShowReplyBox(false);
-            }}
-          >
-            <div className="mail-header">
-              <span className="dot" style={{ backgroundColor: getColor(mail.importance) }}></span>
-              <strong>{mail.subject}</strong> — {mail.sender} ({mail.date})
-            </div>
-            <div className="mail-preview">
-              {mail.body.slice(0, 120)}...
-            </div>
-          </div>
+    <div className="App">
+      <h1>Liste des emails</h1>
+      <ul>
+        {messages.map((msg) => (
+          <li key={msg.id + msg.mailbox} style={{ marginBottom: 16, border: '1px solid #ccc', padding: 8 }}>
+            <strong>{msg.subject}</strong> <br />
+            <span>De : {msg.sender}</span> <br />
+            <span>Date : {msg.date}</span> <br />
+            <span>Importance : {msg.importance}</span> <br />
+            <span>Score : {msg.score}</span> <br />
+            <span style={{ color: '#0074D9' }}>Boîte : {msg.mailbox}</span> <br />
+            <div style={{ marginTop: 8 }}>{msg.body}</div>
+          </li>
         ))}
-      </div>
+      </ul>
+    </div>
+  );
+}
 
-      {selectedMail && (
-        <div className="mail-view">
-          <h2>{selectedMail.subject}</h2>
-          <p><strong>De :</strong> {selectedMail.sender}</p>
-          <p><strong>Date :</strong> {selectedMail.date}</p>
-          <p>{selectedMail.body}</p>
-
-          {!showReplyBox && (
-            <button onClick={() => setShowReplyBox(true)}>Répondre</button>
-          )}
-
-          {showReplyBox && (
+export default App;
             <div className="reply-box">
               <ReactQuill theme="snow" value={replyContent} onChange={setReplyContent} />
               <button onClick={handleReply}>Envoyer la réponse</button>
