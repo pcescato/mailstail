@@ -5,3 +5,4 @@ email-validator
 spacy
 aiofiles
 python-dotenv
+requests

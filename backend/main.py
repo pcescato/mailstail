@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from datetime import datetime, timezone
 from typing import List
 import imaplib
 import email
@@ -17,7 +18,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # à limiter en prod
+    allow_origins=["*"],  # à restreindre en production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,7 +37,7 @@ class MailItem(BaseModel):
     body: str
     importance: str
     score: float
-    mailbox: str  # Ajout de l'indicateur de boîte mail
+    mailbox: str  # boîte mail d'origine
 
 NER_WEIGHTS = {
     "ORG": 0.3,
@@ -55,6 +56,27 @@ KEYWORDS = {
     "relance": 0.4
 }
 
+def log_mail(*, data: dict = None, message_id=None, sender=None, subject=None,
+             score=None, entities=None, keywords=None):
+    os.makedirs("logs", exist_ok=True)
+
+    if data is None:
+        data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "message_id": message_id,
+            "sender": sender,
+            "subject": subject,
+            "score": score,
+            "entities": entities,
+            "keywords": keywords,
+        }
+    else:
+        if "timestamp" not in data:
+            data["timestamp"] = datetime.now(timezone.utc).isoformat()
+
+    with open("logs/processed_mails.jsonl", "a", encoding="utf-8") as logfile:
+        logfile.write(json.dumps(data, ensure_ascii=False) + "\n")
+
 def score_message(body: str, subject: str) -> float:
     score = 0.0
     text = f"{subject.lower()} {body.lower()}"
@@ -65,11 +87,6 @@ def score_message(body: str, subject: str) -> float:
     for ent in doc.ents:
         score += NER_WEIGHTS.get(ent.label_, 0.0)
     return min(score, 1.0)
-
-def log_mail(data: dict):
-    os.makedirs("logs", exist_ok=True)
-    with open("logs/mail_log.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
 def refresh_token():
     client_id = os.getenv("CLIENT_ID")
@@ -99,7 +116,6 @@ def connect_imap(account):
     mail = imaplib.IMAP4_SSL(host)
 
     if not access_token and refresh:
-        # Optionnel: rafraîchir le token si besoin (à adapter selon le provider)
         access_token = refresh_token()
 
     if access_token:
@@ -158,7 +174,7 @@ def fetch_emails_imap(accounts, mailbox="INBOX", max_mails=10):
                 )
 
                 all_messages.append(mail_data)
-                log_mail(mail_data.dict())
+                log_mail(data=mail_data.dict())
             mail.logout()
         except Exception as e:
             print(f"Erreur lors de la récupération des mails pour {account['IMAP_USER']}: {e}")
@@ -166,14 +182,6 @@ def fetch_emails_imap(accounts, mailbox="INBOX", max_mails=10):
 
 @app.get("/api/messages", response_model=List[MailItem])
 def get_messages():
-    # Recherche automatique des comptes IMAP dans les variables d'environnement
-    # Format attendu dans .env :
-    # IMAP1_HOST=...
-    # IMAP1_USER=...
-    # IMAP1_PASS=...
-    # IMAP2_HOST=...
-    # IMAP2_USER=...
-    # etc.
     accounts = []
     i = 1
     while True:
@@ -191,7 +199,6 @@ def get_messages():
         }
         accounts.append(account)
         i += 1
-    # Pour compatibilité ascendante, ajoute le compte simple si présent
     if not accounts and os.getenv("IMAP_USER") and os.getenv("IMAP_HOST"):
         accounts.append({
             "IMAP_HOST": os.getenv("IMAP_HOST"),
@@ -208,6 +215,6 @@ class ReplyData(BaseModel):
 
 @app.post("/api/reply")
 def post_reply(data: ReplyData):
-    # Ici tu peux implémenter l’envoi de mail si tu veux
+    # Exemple : implémentation à venir
     print(f"Réponse au mail {data.mail_id} : {data.reply_content}")
     return {"status": "ok", "message": "Réponse envoyée"}
