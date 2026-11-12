@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from typing import List
 import imaplib
 import email
+import unicodedata
 from email.header import decode_header
+from html.parser import HTMLParser
 import os
 import json
 import spacy
@@ -41,7 +43,9 @@ class MailItem(BaseModel):
 
 NER_WEIGHTS = {
     "ORG": 0.3,
+    # fr_core_news_sm émet PER, PERSON est gardé pour les autres modèles
     "PERSON": 0.2,
+    "PER": 0.2,
     "MONEY": 0.4,
     "DATE": 0.1,
     "GPE": 0.2,
@@ -53,40 +57,101 @@ KEYWORDS = {
     "répondre": 0.3,
     "mise en demeure": 0.7,
     "facture": 0.2,
-    "relance": 0.4
+    "relance": 0.4,
+    "fermeture": 0.4,
+    "résiliation": 0.5,
+    "suspension": 0.5,
+    "échéance": 0.4,
+    "expiration": 0.4,
+    "impayé": 0.5,
+    "dernier rappel": 0.5,
+    "alerte de sécurité": 0.4,
+    "contrat": 0.2,
+    "devis": 0.2
 }
 
-def log_mail(*, data: dict = None, message_id=None, sender=None, subject=None,
-             score=None, entities=None, keywords=None):
+# Plafonds par famille : évitent qu'un mail long et bavard sature le score.
+ENTITY_SCORE_CAP = 0.4
+KEYWORD_SCORE_CAP = 0.6
+
+# Pénalité appliquée aux mails de masse (List-Unsubscribe, Precedence: bulk/list).
+BULK_PENALTY = 0.4
+
+# Seuil de lecture spaCy : sujet + N premiers caractères du corps.
+SPACY_BODY_MAX_CHARS = 1000
+
+# Seuils de classement par importance.
+HIGH_IMPORTANCE_THRESHOLD = 0.6
+MEDIUM_IMPORTANCE_THRESHOLD = 0.3
+
+LOG_PATH = "logs/processed_mails.jsonl"
+LOGGED_FIELDS = ("timestamp", "id", "mailbox", "sender", "subject", "date", "score", "importance")
+_logged_keys = None
+
+def _load_logged_keys() -> set:
+    keys = set()
+    if not os.path.exists(LOG_PATH):
+        return keys
+    with open(LOG_PATH, encoding="utf-8") as logfile:
+        for line in logfile:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            keys.add((record.get("mailbox"), record.get("id")))
+    return keys
+
+def log_mail(data: dict):
+    global _logged_keys
     os.makedirs("logs", exist_ok=True)
 
-    if data is None:
-        data = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "message_id": message_id,
-            "sender": sender,
-            "subject": subject,
-            "score": score,
-            "entities": entities,
-            "keywords": keywords,
-        }
-    else:
-        if "timestamp" not in data:
-            data["timestamp"] = datetime.now(timezone.utc).isoformat()
+    record = {k: data[k] for k in LOGGED_FIELDS if k in data}
+    if "timestamp" not in record:
+        record["timestamp"] = datetime.now(timezone.utc).isoformat()
 
-    with open("logs/processed_mails.jsonl", "a", encoding="utf-8") as logfile:
-        logfile.write(json.dumps(data, ensure_ascii=False) + "\n")
+    if _logged_keys is None:
+        _logged_keys = _load_logged_keys()
+    key = (record.get("mailbox"), record.get("id"))
+    if key in _logged_keys:
+        return
 
-def score_message(body: str, subject: str) -> float:
-    score = 0.0
-    text = f"{subject.lower()} {body.lower()}"
-    for kw, weight in KEYWORDS.items():
-        if kw in text:
-            score += weight
-    doc = nlp(subject + "\n" + body)
-    for ent in doc.ents:
-        score += NER_WEIGHTS.get(ent.label_, 0.0)
-    return min(score, 1.0)
+    with open(LOG_PATH, "a", encoding="utf-8") as logfile:
+        logfile.write(json.dumps(record, ensure_ascii=False) + "\n")
+    _logged_keys.add(key)
+
+def _fold(text: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", text)
+    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return " ".join(stripped.casefold().split())
+
+def _normalize_entity_text(text: str) -> str:
+    return " ".join(text.split()).casefold()
+
+def _is_bulk_mail(headers) -> bool:
+    if not headers:
+        return False
+    hdrs = {str(k).lower(): str(v) for k, v in headers.items()}
+    if "list-unsubscribe" in hdrs:
+        return True
+    precedence = hdrs.get("precedence", "").strip().lower()
+    return precedence in ("bulk", "list")
+
+def score_message(body: str, subject: str, headers=None) -> float:
+    text = _fold(f"{subject} {body}")
+    keyword_score = sum(w for kw, w in KEYWORDS.items() if _fold(kw) in text)
+
+    doc = nlp(subject + "\n" + body[:SPACY_BODY_MAX_CHARS])
+    unique_entities = {
+        (_normalize_entity_text(ent.text), ent.label_)
+        for ent in doc.ents
+        if ent.label_ in NER_WEIGHTS
+    }
+    entity_score = sum(NER_WEIGHTS[label] for _, label in unique_entities)
+
+    score = min(entity_score, ENTITY_SCORE_CAP) + min(keyword_score, KEYWORD_SCORE_CAP)
+    if _is_bulk_mail(headers):
+        score -= BULK_PENALTY
+    return min(max(score, 0.0), 1.0)
 
 def refresh_token():
     client_id = os.getenv("CLIENT_ID")
@@ -128,6 +193,89 @@ def connect_imap(account):
 
     return mail
 
+SUBJECT_FALLBACK = "(sans objet)"
+
+class _HTMLTextExtractor(HTMLParser):
+    BLOCK_TAGS = {"p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "table"}
+    SKIP_TAGS = {"script", "style", "head", "title"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._chunks = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP_TAGS:
+            self._skip_depth += 1
+        elif tag in self.BLOCK_TAGS:
+            self._chunks.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+        elif tag in self.BLOCK_TAGS:
+            self._chunks.append("\n")
+
+    def handle_data(self, data):
+        if not self._skip_depth:
+            self._chunks.append(data)
+
+    def text(self) -> str:
+        lines = (" ".join(line.split()) for line in "".join(self._chunks).splitlines())
+        return "\n".join(line for line in lines if line)
+
+def _html_to_text(html: str) -> str:
+    parser = _HTMLTextExtractor()
+    parser.feed(html)
+    parser.close()
+    return parser.text()
+
+def _decode_bytes(raw: bytes, charset) -> str:
+    try:
+        return raw.decode(charset or "utf-8", errors="ignore")
+    except (LookupError, TypeError):
+        return raw.decode("utf-8", errors="ignore")
+
+def _part_text(part) -> str:
+    payload = part.get_payload(decode=True)
+    if payload is None:
+        return ""
+    return _decode_bytes(payload, part.get_content_charset())
+
+def _decode_header_value(raw, fallback: str = "") -> str:
+    if not raw:
+        return fallback
+    try:
+        chunks = []
+        for chunk, charset in decode_header(raw):
+            if isinstance(chunk, bytes):
+                chunk = _decode_bytes(chunk, charset)
+            chunks.append(chunk)
+        value = "".join(chunks).strip()
+    except Exception:
+        return fallback
+    return value or fallback
+
+def _extract_body(msg) -> str:
+    if not msg.is_multipart():
+        text = _part_text(msg)
+        return _html_to_text(text) if msg.get_content_type() == "text/html" else text
+
+    plain_part = html_part = None
+    for part in msg.walk():
+        if "attachment" in str(part.get("Content-Disposition")):
+            continue
+        content_type = part.get_content_type()
+        if content_type == "text/plain" and plain_part is None:
+            plain_part = part
+        elif content_type == "text/html" and html_part is None:
+            html_part = part
+
+    text = _part_text(plain_part) if plain_part is not None else ""
+    if text.strip() or html_part is None:
+        return text
+    return _html_to_text(_part_text(html_part))
+
 def fetch_emails_imap(accounts, mailbox="INBOX", max_mails=10):
     all_messages = []
     for account in accounts:
@@ -138,43 +286,34 @@ def fetch_emails_imap(accounts, mailbox="INBOX", max_mails=10):
             mail_ids = data[0].split()[-max_mails:]
 
             for num in reversed(mail_ids):
-                typ, msg_data = mail.fetch(num, '(RFC822)')
-                msg = email.message_from_bytes(msg_data[0][1])
+                try:
+                    typ, msg_data = mail.fetch(num, '(RFC822)')
+                    msg = email.message_from_bytes(msg_data[0][1])
 
-                subject, encoding = decode_header(msg.get("Subject"))[0]
-                if isinstance(subject, bytes):
-                    subject = subject.decode(encoding or 'utf-8', errors='ignore')
-                from_ = msg.get("From")
-                date_ = msg.get("Date")
+                    subject = _decode_header_value(msg.get("Subject"), SUBJECT_FALLBACK)
+                    from_ = _decode_header_value(msg.get("From"), "")
+                    date_ = msg.get("Date")
+                    body = _extract_body(msg)
 
-                body = ""
-                if msg.is_multipart():
-                    for part in msg.walk():
-                        if part.get_content_type() == "text/plain" and "attachment" not in str(part.get("Content-Disposition")):
-                            charset = part.get_content_charset() or 'utf-8'
-                            body = part.get_payload(decode=True).decode(charset, errors="ignore")
-                            break
-                else:
-                    charset = msg.get_content_charset() or 'utf-8'
-                    body = msg.get_payload(decode=True).decode(charset, errors="ignore")
+                    score = score_message(body, subject, headers=msg)
+                    importance = "high" if score > HIGH_IMPORTANCE_THRESHOLD else "medium" if score > MEDIUM_IMPORTANCE_THRESHOLD else "low"
+                    date_parsed = email.utils.parsedate_to_datetime(date_).strftime('%Y-%m-%d') if date_ else ""
 
-                score = score_message(body, subject)
-                importance = "high" if score > 0.6 else "medium" if score > 0.3 else "low"
-                date_parsed = email.utils.parsedate_to_datetime(date_).strftime('%Y-%m-%d') if date_ else ""
+                    mail_data = MailItem(
+                        id=num.decode(),
+                        subject=subject,
+                        sender=from_,
+                        date=date_parsed,
+                        body=body,
+                        importance=importance,
+                        score=score,
+                        mailbox=account["IMAP_USER"]
+                    )
 
-                mail_data = MailItem(
-                    id=num.decode(),
-                    subject=subject,
-                    sender=from_,
-                    date=date_parsed,
-                    body=body,
-                    importance=importance,
-                    score=score,
-                    mailbox=account["IMAP_USER"]
-                )
-
-                all_messages.append(mail_data)
-                log_mail(data=mail_data.dict())
+                    all_messages.append(mail_data)
+                    log_mail(mail_data.dict())
+                except Exception as e:
+                    print(f"Erreur sur le mail id={num.decode(errors='replace')} ({account['IMAP_USER']}): {e}")
             mail.logout()
         except Exception as e:
             print(f"Erreur lors de la récupération des mails pour {account['IMAP_USER']}: {e}")
